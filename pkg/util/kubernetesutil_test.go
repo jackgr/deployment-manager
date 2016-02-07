@@ -45,7 +45,7 @@ var serviceInput = `
 
 var serviceExpected = `
 name: mock
-type: Service
+type: kubernetes.v1.service
 properties:
     kind: "Service"
     apiVersion: "v1"
@@ -95,7 +95,7 @@ var rcInput = `
 
 var rcExpected = `
 name: mockname
-type: ReplicationController
+type: kubernetes.v1.replicationcontroller
 properties:
     kind: "ReplicationController"
     apiVersion: "v1"
@@ -126,24 +126,20 @@ properties:
                   protocol: "TCP"
 `
 
-func unmarshalResource(t *testing.T, object []byte) (*common.Resource, error) {
+func unmarshalResource(t *testing.T, object string) *common.Resource {
 	r := &common.Resource{}
 	if err := yaml.Unmarshal([]byte(object), &r); err != nil {
-		t.Errorf("cannot unmarshal test object (%#v)", err)
-		return nil, err
+		t.Fatalf("cannot unmarshal test object: %s", err)
 	}
-	return r, nil
+
+	return r
 }
 
-func testConversion(t *testing.T, object []byte, expected []byte) {
-	e, err := unmarshalResource(t, expected)
+func testConversion(t *testing.T, input, expected string) {
+	e := unmarshalResource(t, expected)
+	result, err := ParseKubernetesObject([]byte(input))
 	if err != nil {
-		t.Fatalf("Failed to unmarshal expected Resource: %v", err)
-	}
-
-	result, err := ParseKubernetesObject(object)
-	if err != nil {
-		t.Fatalf("ParseKubernetesObject failed: %v", err)
+		t.Fatalf("ParseKubernetesObject failed: %s", err)
 	}
 	// Since the object name gets created on the fly, we have to rejigger the returned object
 	// slightly to make sure the DeepEqual works as expected.
@@ -152,16 +148,61 @@ func testConversion(t *testing.T, object []byte, expected []byte) {
 	format := e.Name + "-%d"
 	count, err := fmt.Sscanf(result.Name, format, &i)
 	if err != nil || count != 1 {
-		t.Errorf("Name is not as expected, wanted of the form %s got %s", format, result.Name)
+		t.Errorf("unexpected name format, want:%s have:%s", format, result.Name)
 	}
 	e.Name = result.Name
 	if !reflect.DeepEqual(result, e) {
-		t.Errorf("expected %+v but found %+v", e, result)
+		t.Errorf("want:\n%s\nhave:\n%s\n", ToYAMLOrError(e), ToYAMLOrError(result))
 	}
 
 }
 
 func TestSimple(t *testing.T) {
-	testConversion(t, []byte(rcInput), []byte(rcExpected))
-	testConversion(t, []byte(serviceInput), []byte(serviceExpected))
+	testConversion(t, rcInput, rcExpected)
+	testConversion(t, serviceInput, serviceExpected)
+}
+
+func TestVersionAndKindToTypeName(t *testing.T) {
+	inputConfig := &common.Configuration{Resources: []*common.Resource{
+		parseKubernetesObjectOrDie(t, []byte(serviceInput)),
+		parseKubernetesObjectOrDie(t, []byte(rcInput)),
+	}}
+
+	expectedConfig := &common.Configuration{Resources: []*common.Resource{
+		unmarshalResource(t, serviceExpected),
+		unmarshalResource(t, rcExpected),
+	}}
+
+	ConvertKubernetesResourceTypes(inputConfig)
+	if !reflect.DeepEqual(inputConfig, expectedConfig) {
+		t.Errorf("want:\n%s\nhave:\n%s\n", ToYAMLOrError(expectedConfig), ToYAMLOrError(inputConfig))
+	}
+}
+
+func parseKubernetesObjectOrDie(t *testing.T, object []byte) *common.Resource {
+	o := &common.KubernetesObject{}
+	if err := yaml.Unmarshal(object, &o); err != nil {
+		dieWithParseError(t, err)
+	}
+
+	r := &common.Resource{}
+	var name string
+	if rawN, ok := o.Metadata["name"]; ok {
+		if name, ok = rawN.(string); !ok {
+			dieWithParseError(t, fmt.Errorf("name is not a string: %#v", rawN))
+		}
+	}
+
+	r.Name = name
+	r.Type = o.Kind
+	r.Properties = make(map[string]interface{})
+	if err := yaml.Unmarshal(object, &r.Properties); err != nil {
+		dieWithParseError(t, err)
+	}
+
+	return r
+}
+
+func dieWithParseError(t *testing.T, err error) {
+	t.Fatalf("cannot unmarshal native kubernetes object: %#v", err)
 }

@@ -194,6 +194,17 @@ func (m *manager) createManifest(t *common.Template) (*common.Manifest, error) {
 		return nil, err
 	}
 
+	// Convert the Kubernetes API version and kind to a qualified resource type
+	// name for all resources whose type names are known Kubernetes kinds. Using
+	// qualified resource type names instead of raw Kubernetes kinds lets us
+	// distinguish between resource types processed by kubectl and other classes
+	// of resource types. This conversion is required because existing templates
+	// for Kubernetes API objects set the resource type to the Kubernetes kind.
+	// It can be removed and replaced with an assertion on the resource type name
+	// when existing templates that generate Kubernetes API objects use qualified
+	// resource type names, instead of the raw Kubernetes kind.
+	util.ConvertKubernetesResourceTypes(et.Config)
+
 	return &common.Manifest{
 		Name:           generateManifestName(),
 		Deployment:     t.Name,
